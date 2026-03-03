@@ -31,6 +31,9 @@ context_size: 5
 # tradeoff between action and distance prediction loss
 alpha: 0.5
 
+# confidence-axis regularization (0.0 = off)
+confidence_lambda: 0.0
+
 # tradeoff between task loss and kld
 beta: 0.1
 

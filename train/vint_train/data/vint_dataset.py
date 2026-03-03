@@ -279,6 +279,9 @@ class ViNT_Dataset(Dataset):
         else:
             with open(os.path.join(self.data_folder, trajectory_name, "traj_data.pkl"), "rb") as f:
                 traj_data = pickle.load(f)
+            for key in ["position", "yaw"]:
+                if key in traj_data and hasattr(traj_data[key], "dtype") and traj_data[key].dtype == object:
+                    traj_data[key] = traj_data[key].astype(np.float64)
             self.trajectory_cache[trajectory_name] = traj_data
             return traj_data
 

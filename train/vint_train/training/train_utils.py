@@ -12,8 +12,11 @@ from vint_train.visualizing.distance_utils import visualize_dist_pred
 from vint_train.visualizing.visualize_utils import to_numpy, from_numpy
 from vint_train.training.logger import Logger
 from vint_train.data.data_utils import VISUALIZATION_IMAGE_SIZE
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-from diffusers.training_utils import EMAModel
+try:
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+    from diffusers.training_utils import EMAModel
+except ImportError:
+    pass
 
 import torch
 import torch.nn as nn
@@ -41,6 +44,8 @@ def _compute_losses(
     alpha: float,
     learn_angle: bool,
     action_mask: torch.Tensor = None,
+    bottleneck_z: torch.Tensor = None,
+    confidence_lambda: float = 0.0,
 ):
     """
     Compute losses for distance and action prediction.
@@ -89,6 +94,16 @@ def _compute_losses(
         results["multi_action_orien_cos_sim"] = multi_action_orien_cos_sim
 
     total_loss = alpha * 1e-2 * dist_loss + (1 - alpha) * action_loss
+
+    if confidence_lambda > 0 and bottleneck_z is not None:
+        with torch.no_grad():
+            rel_error = torch.abs(dist_pred.squeeze(-1) - dist_label.float()) / dist_label.float().clamp(min=1.0)
+            confidence_target = torch.exp(-rel_error)  # high when error is low
+        confidence_pred = torch.sigmoid(bottleneck_z[:, 0])
+        confidence_loss = F.mse_loss(confidence_pred, confidence_target)
+        total_loss = total_loss + confidence_lambda * confidence_loss
+        results["confidence_loss"] = confidence_loss
+
     results["total_loss"] = total_loss
 
     return results
@@ -180,6 +195,7 @@ def train(
     num_images_log: int = 8,
     use_wandb: bool = True,
     use_tqdm: bool = True,
+    confidence_lambda: float = 0.0,
 ):
     """
     Train the model for one epoch.
@@ -217,6 +233,10 @@ def train(
         "multi_action_waypts_cos_sim": multi_action_waypts_cos_sim_logger,
         "total_loss": total_loss_logger,
     }
+
+    if confidence_lambda > 0:
+        confidence_loss_logger = Logger("confidence_loss", "train", window_size=print_log_freq)
+        loggers["confidence_loss"] = confidence_loss_logger
 
     if learn_angle:
         action_orien_cos_sim_logger = Logger(
@@ -261,8 +281,8 @@ def train(
         action_mask = action_mask.to(device)
 
         optimizer.zero_grad()
-      
-        dist_pred, action_pred = model_outputs
+
+        dist_pred, action_pred, bottleneck_z = model_outputs
 
         losses = _compute_losses(
             dist_label=dist_label,
@@ -272,6 +292,8 @@ def train(
             alpha=alpha,
             learn_angle=learn_angle,
             action_mask=action_mask,
+            bottleneck_z=bottleneck_z,
+            confidence_lambda=confidence_lambda,
         )
 
         losses["total_loss"].backward()
@@ -322,7 +344,7 @@ def evaluate(
     use_wandb: bool = True,
     eval_fraction: float = 1.0,
     use_tqdm: bool = True,
-
+    confidence_lambda: float = 0.0,
 ):
     """
     Evaluate the model on the given evaluation dataset.
@@ -355,6 +377,10 @@ def evaluate(
         "multi_action_waypts_cos_sim": multi_action_waypts_cos_sim_logger,
         "total_loss": total_loss_logger,
     }
+
+    if confidence_lambda > 0:
+        confidence_loss_logger = Logger("confidence_loss", eval_type)
+        loggers["confidence_loss"] = confidence_loss_logger
 
     if learn_angle:
         action_orien_cos_sim_logger = Logger("action_orien_cos_sim", eval_type)
@@ -399,7 +425,7 @@ def evaluate(
             action_label = action_label.to(device)
             action_mask = action_mask.to(device)
 
-            dist_pred, action_pred = model_outputs
+            dist_pred, action_pred, bottleneck_z = model_outputs
 
             losses = _compute_losses(
                 dist_label=dist_label,
@@ -409,6 +435,8 @@ def evaluate(
                 alpha=alpha,
                 learn_angle=learn_angle,
                 action_mask=action_mask,
+                bottleneck_z=bottleneck_z,
+                confidence_lambda=confidence_lambda,
             )
 
             for key, value in losses.items():

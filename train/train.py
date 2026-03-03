@@ -14,26 +14,31 @@ from torchvision import transforms
 import torch.backends.cudnn as cudnn
 from warmup_scheduler import GradualWarmupScheduler
 
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-from diffusers.optimization import get_scheduler
-
 """
 IMPORT YOUR MODEL HERE
 """
 from vint_train.models.gnm.gnm import GNM
 from vint_train.models.vint.vint import ViNT
 from vint_train.models.vint.vit import ViT
-from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
-from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
-from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+
+try:
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+    from diffusers.optimization import get_scheduler
+    from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
+    from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
+    from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+    HAS_DIFFUSERS = True
+except ImportError:
+    HAS_DIFFUSERS = False
 
 
 from vint_train.data.vint_dataset import ViNT_Dataset
 from vint_train.training.train_eval_loop import (
     train_eval_loop,
-    train_eval_loop_nomad,
     load_model,
 )
+if HAS_DIFFUSERS:
+    from vint_train.training.train_eval_loop import train_eval_loop_nomad
 
 
 def main(config):
@@ -51,12 +56,19 @@ def main(config):
         )
         print("Using cuda devices:", os.environ["CUDA_VISIBLE_DEVICES"])
     else:
-        print("Using cpu")
+        if "gpu_ids" not in config:
+            config["gpu_ids"] = []
+        print("CUDA not available")
 
-    first_gpu_id = config["gpu_ids"][0]
-    device = torch.device(
-        f"cuda:{first_gpu_id}" if torch.cuda.is_available() else "cpu"
-    )
+    if torch.cuda.is_available():
+        first_gpu_id = config["gpu_ids"][0]
+        device = torch.device(f"cuda:{first_gpu_id}")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("Using MPS device")
+    else:
+        device = torch.device("cpu")
+        print("Using cpu")
 
     if "seed" in config:
         np.random.seed(config["seed"])
@@ -300,7 +312,7 @@ def main(config):
         if scheduler is not None and "scheduler" in latest_checkpoint:
             scheduler.load_state_dict(latest_checkpoint["scheduler"].state_dict())
 
-    if config["model_type"] == "vint" or config["model_type"] == "gnm": 
+    if config["model_type"] == "vint" or config["model_type"] == "gnm":
         train_eval_loop(
             train_model=config["train"],
             model=model,
@@ -321,6 +333,7 @@ def main(config):
             alpha=config["alpha"],
             use_wandb=config["use_wandb"],
             eval_fraction=config["eval_fraction"],
+            confidence_lambda=config.get("confidence_lambda", 0.0),
         )
     else:
         train_eval_loop_nomad(

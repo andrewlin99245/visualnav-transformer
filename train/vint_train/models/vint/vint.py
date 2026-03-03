@@ -137,4 +137,4 @@ class ViNT(BaseModel):
             action_pred[:, :, 2:] = F.normalize(
                 action_pred[:, :, 2:].clone(), dim=-1
             )  # normalize the angle prediction
-        return dist_pred, action_pred
+        return dist_pred, action_pred, final_repr

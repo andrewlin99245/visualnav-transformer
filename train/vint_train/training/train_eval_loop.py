@@ -5,7 +5,6 @@ from typing import List, Optional, Dict
 from prettytable import PrettyTable
 
 from vint_train.training.train_utils import train, evaluate
-from vint_train.training.train_utils import train_nomad, evaluate_nomad
 
 import torch
 import torch.nn as nn
@@ -14,8 +13,12 @@ from torch.utils.data import DataLoader
 from torch.optim import Adam
 from torchvision import transforms
 
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-from diffusers.training_utils import EMAModel
+try:
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+    from diffusers.training_utils import EMAModel
+    from vint_train.training.train_utils import train_nomad, evaluate_nomad
+except ImportError:
+    pass
 
 def train_eval_loop(
     train_model: bool,
@@ -38,6 +41,7 @@ def train_eval_loop(
     learn_angle: bool = True,
     use_wandb: bool = True,
     eval_fraction: float = 0.25,
+    confidence_lambda: float = 0.0,
 ):
     """
     Train and evaluate the model for several epochs (vint or gnm models)
@@ -63,6 +67,7 @@ def train_eval_loop(
         learn_angle: whether to learn the angle or not
         use_wandb: whether to log to wandb or not
         eval_fraction: fraction of training data to use for evaluation
+        confidence_lambda: weight for confidence-axis regularization loss
     """
     assert 0 <= alpha <= 1
     latest_path = os.path.join(project_folder, f"latest.pth")
@@ -88,6 +93,7 @@ def train_eval_loop(
                 image_log_freq=image_log_freq,
                 num_images_log=num_images_log,
                 use_wandb=use_wandb,
+                confidence_lambda=confidence_lambda,
             )
 
         avg_total_test_loss = []
@@ -111,6 +117,7 @@ def train_eval_loop(
                 num_images_log=num_images_log,
                 use_wandb=use_wandb,
                 eval_fraction=eval_fraction,
+                confidence_lambda=confidence_lambda,
             )
 
             avg_total_test_loss.append(total_eval_loss)

@@ -209,7 +209,7 @@ def main(args: argparse.Namespace):
                 batch_obs_imgs = torch.cat(batch_obs_imgs, dim=0).to(device)
                 batch_goal_data = torch.cat(batch_goal_data, dim=0).to(device)
 
-                distances, waypoints = model(batch_obs_imgs, batch_goal_data)
+                distances, waypoints, _ = model(batch_obs_imgs, batch_goal_data)
                 distances = to_numpy(distances)
                 waypoints = to_numpy(waypoints)
                 # look for closest node

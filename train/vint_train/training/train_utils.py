@@ -35,6 +35,42 @@ ACTION_STATS = {}
 for key in data_config['action_stats']:
     ACTION_STATS[key] = np.array(data_config['action_stats'][key])
 
+# ===========================================================================
+# SIRA: Steering-Informed Representation Alignment
+# ===========================================================================
+class SIRAHook:
+    """Forward hooks that capture residual stream output at ALL layers WITH gradient flow.
+
+    Unlike MultiLayerCapture (which detaches), this hook preserves gradients
+    so that the SIRA alignment loss can backprop through the captured tensors.
+    """
+
+    def __init__(self):
+        self.captured = {}   # layer_idx -> [B, 7, 512] with grad
+        self._handles = []
+
+    def install(self, layers):
+        """Install hooks on all transformer layers.
+
+        Args:
+            layers: nn.ModuleList of transformer layers
+        """
+        for i, layer in enumerate(layers):
+            def make_hook(idx):
+                def hook_fn(module, input, output):
+                    output.retain_grad()
+                    self.captured[idx] = output
+                    return output
+                return hook_fn
+            self._handles.append(layer.register_forward_hook(make_hook(i)))
+
+    def remove(self):
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+        self.captured.clear()
+
+
 # Train utils for ViNT and GNM
 def _compute_losses(
     dist_label: torch.Tensor,
@@ -46,6 +82,10 @@ def _compute_losses(
     action_mask: torch.Tensor = None,
     bottleneck_z: torch.Tensor = None,
     confidence_lambda: float = 0.0,
+    sira_hiddens: dict = None,
+    sira_vectors: dict = None,
+    sira_lambda: float = 0.0,
+    sira_margin: float = 0.0,
 ):
     """
     Compute losses for distance and action prediction.
@@ -103,6 +143,21 @@ def _compute_losses(
         confidence_loss = F.mse_loss(confidence_pred, confidence_target)
         total_loss = total_loss + confidence_lambda * confidence_loss
         results["confidence_loss"] = confidence_loss
+
+    if sira_lambda > 0 and sira_hiddens and sira_vectors:
+        # Compute alignment loss across all hooked layers, average
+        layer_losses = []
+        for layer_idx, h in sira_hiddens.items():
+            if layer_idx not in sira_vectors:
+                continue
+            v = sira_vectors[layer_idx]
+            h_flat = h.reshape(h.shape[0], -1)  # [B, 3584]
+            projection = torch.matmul(h_flat, v)  # [B]
+            layer_losses.append(F.relu(-projection + sira_margin).mean())
+        if layer_losses:
+            sira_loss = torch.stack(layer_losses).mean()
+            total_loss = total_loss + sira_lambda * sira_loss
+            results["sira_loss"] = sira_loss
 
     results["total_loss"] = total_loss
 
@@ -196,6 +251,9 @@ def train(
     use_wandb: bool = True,
     use_tqdm: bool = True,
     confidence_lambda: float = 0.0,
+    sira_vectors: dict = None,
+    sira_lambda: float = 0.0,
+    sira_margin: float = 0.0,
 ):
     """
     Train the model for one epoch.
@@ -216,6 +274,13 @@ def train(
         use_wandb: whether to use wandb
         use_tqdm: whether to use tqdm
     """
+    # Install SIRA hooks if active
+    sira_hook = None
+    if sira_lambda > 0 and sira_vectors is not None:
+        sira_hook = SIRAHook()
+        target_model = model.module if hasattr(model, 'module') else model
+        sira_hook.install(target_model.decoder.sa_decoder.layers)
+
     model.train()
     dist_loss_logger = Logger("dist_loss", "train", window_size=print_log_freq)
     action_loss_logger = Logger("action_loss", "train", window_size=print_log_freq)
@@ -237,6 +302,10 @@ def train(
     if confidence_lambda > 0:
         confidence_loss_logger = Logger("confidence_loss", "train", window_size=print_log_freq)
         loggers["confidence_loss"] = confidence_loss_logger
+
+    if sira_lambda > 0 and sira_vectors is not None:
+        sira_loss_logger = Logger("sira_loss", "train", window_size=print_log_freq)
+        loggers["sira_loss"] = sira_loss_logger
 
     if learn_angle:
         action_orien_cos_sim_logger = Logger(
@@ -294,6 +363,10 @@ def train(
             action_mask=action_mask,
             bottleneck_z=bottleneck_z,
             confidence_lambda=confidence_lambda,
+            sira_hiddens=sira_hook.captured if sira_hook is not None else None,
+            sira_vectors=sira_vectors,
+            sira_lambda=sira_lambda,
+            sira_margin=sira_margin,
         )
 
         losses["total_loss"].backward()
@@ -327,6 +400,10 @@ def train(
             mode="train",
             use_latest=True,
         )
+
+    # Cleanup SIRA hook
+    if sira_hook is not None:
+        sira_hook.remove()
 
 
 def evaluate(

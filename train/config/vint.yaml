@@ -41,6 +41,12 @@ alpha: 0.5
 # confidence-axis regularization
 confidence_lambda: 0.1
 
+# SIRA: Steering-Informed Representation Alignment
+sira_lambda: 0.05        # auxiliary loss weight (0 = disabled)
+sira_recompute_every: 5   # epochs between steering vector recomputation
+sira_margin: 0.0          # hinge loss margin
+sira_subset_frac: 0.1     # fraction of training data for steering vector computation
+
 # distance bounds for distance and action and distance predictions 
 distance:
   min_dist_cat: 0

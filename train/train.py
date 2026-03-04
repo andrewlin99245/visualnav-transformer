@@ -334,6 +334,10 @@ def main(config):
             use_wandb=config["use_wandb"],
             eval_fraction=config["eval_fraction"],
             confidence_lambda=config.get("confidence_lambda", 0.0),
+            sira_lambda=config.get("sira_lambda", 0.0),
+            sira_recompute_every=config.get("sira_recompute_every", 5),
+            sira_margin=config.get("sira_margin", 0.0),
+            sira_subset_frac=config.get("sira_subset_frac", 0.1),
         )
     else:
         train_eval_loop_nomad(

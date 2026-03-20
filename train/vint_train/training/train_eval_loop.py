@@ -1,10 +1,11 @@
+from __future__ import annotations
 import wandb
 import os
 import numpy as np
 from typing import List, Optional, Dict
 from prettytable import PrettyTable
 
-from vint_train.training.train_utils import train, evaluate, SIRAHook
+from vint_train.training.train_utils import train, evaluate, SIRAHook, recompute_sira_vectors
 
 import torch
 import torch.nn as nn
@@ -19,95 +20,6 @@ try:
     from vint_train.training.train_utils import train_nomad, evaluate_nomad
 except ImportError:
     pass
-
-def recompute_sira_vectors(
-    model: nn.Module,
-    dataloader: DataLoader,
-    transform: transforms,
-    device: torch.device,
-    subset_frac: float = 0.1,
-    error_threshold: float = 0.3,
-) -> dict:
-    """Compute per-layer steering vectors from model's own prediction errors.
-
-    Runs a forward pass over a subset of training data, partitions samples by
-    prediction quality, and returns normalized mean difference of residual
-    stream activations at each transformer layer.
-
-    Returns:
-        Dict mapping layer_idx -> unit steering vector of shape [seq_len * embed_dim],
-        or None if insufficient samples in either partition.
-    """
-    target_model = model.module if hasattr(model, 'module') else model
-    num_layers = len(target_model.decoder.sa_decoder.layers)
-    was_training = model.training
-    model.eval()
-
-    # Install hooks on all layers
-    hook = SIRAHook()
-    hook.install(target_model.decoder.sa_decoder.layers)
-
-    # Per-layer accumulators
-    good_hiddens = {i: [] for i in range(num_layers)}
-    bad_hiddens = {i: [] for i in range(num_layers)}
-    n_batches = max(1, int(len(dataloader) * subset_frac))
-
-    with torch.no_grad():
-        for i, data in enumerate(dataloader):
-            if i >= n_batches:
-                break
-
-            (obs_image, goal_image, action_label, dist_label,
-             goal_pos, dataset_index, action_mask) = data
-
-            obs_images = torch.split(obs_image, 3, dim=1)
-            obs_images = [transform(img).to(device) for img in obs_images]
-            obs_image = torch.cat(obs_images, dim=1)
-            goal_image = transform(goal_image).to(device)
-            dist_label = dist_label.to(device)
-
-            dist_pred, _, _ = model(obs_image, goal_image)
-
-            # Compute per-sample relative error
-            rel_error = torch.abs(
-                dist_pred.squeeze(-1) - dist_label.float()
-            ) / dist_label.float().clamp(min=1.0)
-
-            for layer_idx in range(num_layers):
-                h = hook.captured[layer_idx].detach()
-                h_flat = h.reshape(h.shape[0], -1)  # [B, 3584]
-                for j in range(h_flat.shape[0]):
-                    if rel_error[j].item() < error_threshold:
-                        good_hiddens[layer_idx].append(h_flat[j])
-                    else:
-                        bad_hiddens[layer_idx].append(h_flat[j])
-
-    hook.remove()
-
-    if was_training:
-        model.train()
-
-    # Check we have enough samples (use layer 0 as proxy — all layers have same count)
-    n_good = len(good_hiddens[0])
-    n_bad = len(bad_hiddens[0])
-    if n_good < 5 or n_bad < 5:
-        print(f"  SIRA: insufficient samples (good={n_good}, "
-              f"bad={n_bad}), skipping recomputation")
-        return None
-
-    vectors = {}
-    for layer_idx in range(num_layers):
-        good_mean = torch.stack(good_hiddens[layer_idx]).mean(dim=0)
-        bad_mean = torch.stack(bad_hiddens[layer_idx]).mean(dim=0)
-        v = good_mean - bad_mean
-        v_normalized = v / (v.norm() + 1e-12)
-        vectors[layer_idx] = v_normalized.to(device)
-
-        cos_sim = F.cosine_similarity(good_mean.unsqueeze(0), bad_mean.unsqueeze(0)).item()
-        print(f"  SIRA L{layer_idx}: raw_norm={v.norm().item():.2f}, cos_sim={cos_sim:.4f}")
-
-    print(f"  SIRA: {n_good} good, {n_bad} bad samples across {n_batches} batches")
-    return vectors
 
 
 def train_eval_loop(
@@ -133,35 +45,35 @@ def train_eval_loop(
     eval_fraction: float = 0.25,
     confidence_lambda: float = 0.0,
     sira_lambda: float = 0.0,
-    sira_recompute_every: int = 5,
+    sira_n_samples: int = 1000,
     sira_margin: float = 0.0,
-    sira_subset_frac: float = 0.1,
 ):
     """
     Train and evaluate the model for several epochs (vint or gnm models)
     """
     assert 0 <= alpha <= 1
     latest_path = os.path.join(project_folder, f"latest.pth")
-    sira_vectors = None  # Will be computed after first K epochs
+    sira_vectors = None
+
+    # Compute initial SIRA vectors (also used for monitoring in baseline)
+    if train_model:
+        print(f"\n=== {'SIRA' if sira_lambda > 0 else 'Monitoring'}: Computing initial steering vectors ===")
+        sira_vectors = recompute_sira_vectors(
+            model=model,
+            dataloader=dataloader,
+            transform=transform,
+            device=device,
+            n_samples=sira_n_samples,
+        )
+        if sira_lambda == 0:
+            sira_vectors = None  # don't use as loss, just monitored
 
     for epoch in range(current_epoch, current_epoch + epochs):
-        # Recompute SIRA steering vectors every K epochs
-        if (sira_lambda > 0 and epoch > 0
-                and epoch % sira_recompute_every == 0):
-            print(f"\n=== SIRA: Recomputing steering vectors at epoch {epoch} ===")
-            sira_vectors = recompute_sira_vectors(
-                model=model,
-                dataloader=dataloader,
-                transform=transform,
-                device=device,
-                subset_frac=sira_subset_frac,
-            )
-
         if train_model:
             print(
             f"Start ViNT Training Epoch {epoch}/{current_epoch + epochs - 1}"
             )
-            train(
+            sira_vectors = train(
                 model=model,
                 optimizer=optimizer,
                 dataloader=dataloader,
@@ -181,6 +93,7 @@ def train_eval_loop(
                 sira_vectors=sira_vectors,
                 sira_lambda=sira_lambda,
                 sira_margin=sira_margin,
+                sira_n_samples=sira_n_samples,
             )
 
         avg_total_test_loss = []

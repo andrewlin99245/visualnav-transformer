@@ -1,0 +1,71 @@
+project_name: vint-finetune
+run_name: vint-eval-pretrained
+
+load_run: vint-pretrained
+
+use_wandb: true
+train: false      # eval only
+batch_size: 256
+epochs: 1
+gpu_ids: [0]
+num_workers: 12
+lr: 1e-4
+optimizer: adamw
+clipping: false
+max_norm: 1.
+scheduler: "cosine"
+warmup: false
+seed: 0
+
+model_type: vint
+obs_encoder: "efficientnet-b0"
+obs_encoding_size: 512
+mha_num_attention_heads: 4
+mha_num_attention_layers: 4
+mha_ff_dim_factor: 4
+late_fusion: false
+
+normalize: true
+context_type: temporal
+context_size: 5
+alpha: 0.5
+confidence_lambda: 0.0
+
+sira_lambda: 0.0
+sira_margin: 0.0
+
+distance:
+  min_dist_cat: 0
+  max_dist_cat: 20
+action:
+  min_dist_cat: 0
+  max_dist_cat: 10
+close_far_threshold: 10
+
+len_traj_pred: 5
+learn_angle: true
+
+image_size: [85, 64]
+goal_type: "image"
+
+datasets:
+  go_stanford:
+    data_folder: PLACEHOLDER
+    test: PLACEHOLDER
+    end_slack: 0
+    goals_per_obs: 2
+    negative_mining: true
+  scand:
+    data_folder: PLACEHOLDER
+    test: PLACEHOLDER
+    end_slack: 0
+    goals_per_obs: 1
+    negative_mining: true
+
+print_log_freq: 100
+image_log_freq: 1000
+num_images_log: 8
+pairwise_test_freq: 0
+eval_fraction: 0.25
+wandb_log_freq: 10
+eval_freq: 1

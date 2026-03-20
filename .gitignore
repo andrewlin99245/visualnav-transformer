@@ -3,6 +3,10 @@ train/datasets/*
 train/vint_train/data/data_splits/*
 train/wandb/*
 train/gnm_dataset/*
+experiments/results/*
+slurm-*.out
+train/slurm-*.out
+*.whl
 *_test.yaml
 
 *.png

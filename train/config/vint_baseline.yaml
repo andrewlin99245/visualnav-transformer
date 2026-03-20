@@ -1,5 +1,5 @@
 project_name: vint-release
-run_name: vint-5c
+run_name: vint-baseline
 
 # training setup
 use_wandb: True # set to false if you don't want to log to wandb
@@ -13,7 +13,7 @@ optimizer: adamw
 clipping: False
 max_norm: 1.
 scheduler: "cosine"
-warmup: True 
+warmup: True
 warmup_epochs: 4
 cyclic_period: 10
 plateau_patience: 3
@@ -41,20 +41,20 @@ alpha: 0.5
 # confidence-axis regularization
 confidence_lambda: 0.1
 
-# SIRA: Steering-Informed Representation Alignment
-sira_lambda: 0.05        # auxiliary loss weight (0 = disabled)
-sira_recompute_every: 3   # epochs between steering vector recomputation
-sira_margin: 0.0          # hinge loss margin
-sira_subset_frac: 0.1     # fraction of training data for steering vector computation
+# SIRA disabled for baseline
+sira_lambda: 0.0
+sira_recompute_every: 5
+sira_margin: 0.0
+sira_subset_frac: 0.1
 
-# distance bounds for distance and action and distance predictions 
+# distance bounds for distance and action and distance predictions
 distance:
   min_dist_cat: 0
   max_dist_cat: 20
 action:
   min_dist_cat: 0
   max_dist_cat: 10
-close_far_threshold: 10 # distance threshold used to seperate the close and the far  subgoals that are sampled per datapoint
+close_far_threshold: 10
 
 # action output params
 len_traj_pred: 5
@@ -66,15 +66,15 @@ goal_type: "image"
 
 datasets:
   go_stanford:
-    data_folder: /local/scratch/tsungen.9829781.0/go_stanford
-    train: /scratch/tsungen/vnm_datasets/data_splits/go_stanford/train/
-    test: /scratch/tsungen/vnm_datasets/data_splits/go_stanford/test/
+    data_folder: PLACEHOLDER
+    train: PLACEHOLDER
+    test: PLACEHOLDER
     end_slack: 0
     goals_per_obs: 2
     negative_mining: True
   scand:
-    data_folder: /local/scratch/tsungen.9829781.0/scand
-    test: /scratch/tsungen/vnm_datasets/data_splits/scand/test/
+    data_folder: PLACEHOLDER
+    test: PLACEHOLDER
     end_slack: 0
     goals_per_obs: 1
     negative_mining: True
@@ -83,7 +83,7 @@ datasets:
 ## =0 turns off
 print_log_freq: 100 # in iterations
 image_log_freq: 1000 #0 # in iterations
-num_images_log: 8 #0 
+num_images_log: 8 #0
 pairwise_test_freq: 0 # in epochs
 eval_fraction: 0.25
 wandb_log_freq: 10 # in iterations

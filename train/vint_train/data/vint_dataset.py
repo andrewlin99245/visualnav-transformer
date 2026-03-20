@@ -155,7 +155,7 @@ class ViNT_Dataset(Dataset):
                 dynamic_ncols=True,
                 desc=f"Building LMDB cache for {self.dataset_name}"
             )
-            with lmdb.open(cache_filename, map_size=2**40) as image_cache:
+            with lmdb.open(cache_filename, map_size=int(1e10)) as image_cache:
                 with image_cache.begin(write=True) as txn:
                     for traj_name, time in tqdm_iterator:
                         image_path = get_data_path(self.data_folder, traj_name, time)
@@ -163,7 +163,7 @@ class ViNT_Dataset(Dataset):
                             txn.put(image_path.encode(), f.read())
 
         # Reopen the cache file in read-only mode
-        self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True)
+        self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True, lock=False, readahead=False)
 
     def _build_index(self, use_tqdm: bool = False):
         """
@@ -235,6 +235,7 @@ class ViNT_Dataset(Dataset):
             return img_path_to_data(image_bytes, self.image_size)
         except TypeError:
             print(f"Failed to load image {image_path}")
+            return torch.zeros(3, self.image_size[1], self.image_size[0])
 
     def _compute_actions(self, traj_data, curr_time, goal_time):
         start_index = curr_time
@@ -281,7 +282,7 @@ class ViNT_Dataset(Dataset):
                 traj_data = pickle.load(f)
             for key in ["position", "yaw"]:
                 if key in traj_data and hasattr(traj_data[key], "dtype") and traj_data[key].dtype == object:
-                    traj_data[key] = traj_data[key].astype(np.float64)
+                    traj_data[key] = np.array(traj_data[key].tolist(), dtype=np.float64)
             self.trajectory_cache[trajectory_name] = traj_data
             return traj_data
 

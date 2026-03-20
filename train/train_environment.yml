@@ -24,12 +24,13 @@ dependencies:
   - efficientnet-pytorch
   - warmup-scheduler
   - diffusers==0.11.1
+  - huggingface_hub==0.11.1
   - lmdb 
   - vit-pytorch
   - positional-encodings
+  - zarr<3
+  - numcodecs<0.16
 
 
 
   
-
-

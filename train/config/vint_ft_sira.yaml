@@ -1,0 +1,84 @@
+project_name: vint-finetune
+run_name: vint-ft-sira
+
+# Load pretrained ViNT checkpoint
+load_run: vint-pretrained
+
+# training setup
+use_wandb: true
+train: true
+batch_size: 256
+epochs: 3
+gpu_ids: [0]
+num_workers: 12
+lr: 1e-4          # lower lr for finetuning
+optimizer: adamw
+clipping: false
+max_norm: 1.
+scheduler: "cosine"
+warmup: false
+seed: 0
+
+# model params
+model_type: vint
+obs_encoder: "efficientnet-b0"
+obs_encoding_size: 512
+mha_num_attention_heads: 4
+mha_num_attention_layers: 4
+mha_ff_dim_factor: 4
+late_fusion: false
+
+# normalization
+normalize: true
+
+# context
+context_type: temporal
+context_size: 5
+alpha: 0.5
+confidence_lambda: 0.0
+
+# SIRA
+sira_lambda: 0.05
+sira_n_samples: 1000             # 1000 samples (250 good, 250 bad)
+sira_margin: 0.0                 # pairwise ranking margin (0 = only correct order violations)
+
+# distance bounds
+distance:
+  min_dist_cat: 0
+  max_dist_cat: 20
+action:
+  min_dist_cat: 0
+  max_dist_cat: 10
+close_far_threshold: 10
+
+# action output params
+len_traj_pred: 5
+learn_angle: true
+
+# dataset
+image_size: [85, 64]
+goal_type: "image"
+
+datasets:
+  go_stanford:
+    data_folder: PLACEHOLDER
+    train: PLACEHOLDER
+    test: PLACEHOLDER
+    end_slack: 0
+    goals_per_obs: 2
+    negative_mining: true
+  scand:
+    data_folder: PLACEHOLDER
+    test: PLACEHOLDER
+    end_slack: 0
+    goals_per_obs: 1
+    negative_mining: true
+
+# logging
+print_log_freq: 100
+image_log_freq: 1000
+num_images_log: 8
+pairwise_test_freq: 0
+eval_fraction: 0.25
+wandb_log_freq: 10
+eval_freq: 1      # eval every epoch (only 3 epochs)

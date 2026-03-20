@@ -1,3 +1,4 @@
+from __future__ import annotations
 import wandb
 import os
 import numpy as np
@@ -58,7 +59,8 @@ class SIRAHook:
         for i, layer in enumerate(layers):
             def make_hook(idx):
                 def hook_fn(module, input, output):
-                    output.retain_grad()
+                    if output.requires_grad:
+                        output.retain_grad()
                     self.captured[idx] = output
                     return output
                 return hook_fn
@@ -69,6 +71,107 @@ class SIRAHook:
             handle.remove()
         self._handles.clear()
         self.captured.clear()
+
+
+def recompute_sira_vectors(
+    model: nn.Module,
+    dataloader: DataLoader,
+    transform: transforms,
+    device: torch.device,
+    n_samples: int = 1000,
+) -> dict:
+    """Compute per-layer steering vectors from model's own prediction errors.
+
+    Runs a forward pass over up to n_samples training samples, partitions by
+    per-sample (action_loss + dist_loss), quartile-splits (bottom 25% = good,
+    top 25% = bad), and returns normalized mean difference of activations
+    at each transformer layer.
+
+    Returns:
+        Dict mapping layer_idx -> unit steering vector of shape [seq_len * embed_dim].
+    """
+    target_model = model.module if hasattr(model, 'module') else model
+    num_layers = len(target_model.decoder.sa_decoder.layers)
+    was_training = model.training
+    model.eval()
+
+    hook = SIRAHook()
+    hook.install(target_model.decoder.sa_decoder.layers)
+
+    # Create a fresh single-process dataloader to avoid worker conflicts
+    # with the outer training loop's persistent workers
+    recompute_loader = DataLoader(
+        dataloader.dataset,
+        batch_size=dataloader.batch_size,
+        shuffle=True,
+        num_workers=0,
+        drop_last=False,
+    )
+
+    all_hiddens = {i: [] for i in range(num_layers)}
+    all_task_losses = []
+    n_collected = 0
+
+    with torch.no_grad():
+        for i, data in enumerate(recompute_loader):
+            if n_collected >= n_samples:
+                break
+
+            (obs_image, goal_image, action_label, dist_label,
+             goal_pos, dataset_index, action_mask) = data
+
+            obs_images = torch.split(obs_image, 3, dim=1)
+            obs_images = [transform(img).to(device) for img in obs_images]
+            obs_image = torch.cat(obs_images, dim=1)
+            goal_image = transform(goal_image).to(device)
+            dist_label = dist_label.to(device)
+            action_label = action_label.to(device)
+
+            dist_pred, action_pred, _ = model(obs_image, goal_image)
+
+            # Per-sample quality metric: action loss only
+            action_loss_per_sample = F.mse_loss(
+                action_pred, action_label, reduction="none"
+            ).mean(dim=-1).mean(dim=-1)  # [B]
+            task_loss = action_loss_per_sample  # [B]
+
+            all_task_losses.append(task_loss.cpu())
+            for layer_idx in range(num_layers):
+                h = hook.captured[layer_idx].detach().cpu()
+                all_hiddens[layer_idx].append(h.reshape(h.shape[0], -1))
+            n_collected += task_loss.shape[0]
+
+    hook.remove()
+
+    if was_training:
+        model.train()
+
+    # Concatenate across batches
+    all_task_losses = torch.cat(all_task_losses)  # [N]
+    for layer_idx in range(num_layers):
+        all_hiddens[layer_idx] = torch.cat(all_hiddens[layer_idx])  # [N, D]
+
+    # Quartile split: bottom 25% loss = good, top 25% loss = bad, middle 50% ignored
+    n = len(all_task_losses)
+    sorted_indices = torch.argsort(all_task_losses)
+    q = n // 4
+    good_indices = sorted_indices[:q]
+    bad_indices = sorted_indices[n - q:]
+
+    vectors = {}
+    for layer_idx in range(num_layers):
+        h = all_hiddens[layer_idx]
+        good_mean = h[good_indices].mean(dim=0)
+        bad_mean = h[bad_indices].mean(dim=0)
+        v = good_mean - bad_mean
+        v_normalized = v / (v.norm() + 1e-12)
+        vectors[layer_idx] = v_normalized.to(device)
+
+        cos_sim = F.cosine_similarity(good_mean.unsqueeze(0), bad_mean.unsqueeze(0)).item()
+        print(f"  SIRA L{layer_idx}: raw_norm={v.norm().item():.2f}, cos_sim={cos_sim:.4f}")
+
+    print(f"  SIRA: {q} good, {q} bad samples (middle {n - 2*q} ignored) from {n_collected} total")
+    return vectors
 
 
 # Train utils for ViNT and GNM
@@ -145,15 +248,35 @@ def _compute_losses(
         results["confidence_loss"] = confidence_loss
 
     if sira_lambda > 0 and sira_hiddens and sira_vectors:
-        # Compute alignment loss across all hooked layers, average
+        # Pairwise ranking SIRA: good samples should score higher than bad samples
+        # along the steering direction, by at least sira_margin
+        with torch.no_grad():
+            action_loss_per_sample = F.mse_loss(
+                action_pred, action_label, reduction="none"
+            ).mean(dim=-1).mean(dim=-1)  # [B]
+            task_loss_per_sample = action_loss_per_sample  # [B]
+
+            B = task_loss_per_sample.shape[0]
+            q = max(1, B // 4)
+            sorted_idx = torch.argsort(task_loss_per_sample)
+            good_mask = torch.zeros(B, dtype=torch.bool, device=dist_pred.device)
+            bad_mask = torch.zeros(B, dtype=torch.bool, device=dist_pred.device)
+            good_mask[sorted_idx[:q]] = True   # bottom 25% loss = good
+            bad_mask[sorted_idx[B - q:]] = True  # top 25% loss = bad
+
         layer_losses = []
         for layer_idx, h in sira_hiddens.items():
             if layer_idx not in sira_vectors:
                 continue
-            v = sira_vectors[layer_idx]
-            h_flat = h.reshape(h.shape[0], -1)  # [B, 3584]
-            projection = torch.matmul(h_flat, v)  # [B]
-            layer_losses.append(F.relu(-projection + sira_margin).mean())
+            v = sira_vectors[layer_idx]  # unit vector [D]
+            h_flat = h.reshape(h.shape[0], -1)  # [B, D]
+            h_norm = F.normalize(h_flat, dim=1)  # [B, D]
+            cos_sim = torch.matmul(h_norm, v)  # [B]
+            good_cos = cos_sim[good_mask]  # [Q]
+            bad_cos = cos_sim[bad_mask]    # [Q]
+            # All pairs: good should score at least margin above bad
+            diff = good_cos.unsqueeze(1) - bad_cos.unsqueeze(0)  # [Q, Q]
+            layer_losses.append(F.relu(sira_margin - diff).mean())
         if layer_losses:
             sira_loss = torch.stack(layer_losses).mean()
             total_loss = total_loss + sira_lambda * sira_loss
@@ -254,6 +377,7 @@ def train(
     sira_vectors: dict = None,
     sira_lambda: float = 0.0,
     sira_margin: float = 0.0,
+    sira_n_samples: int = 1000,
 ):
     """
     Train the model for one epoch.
@@ -318,6 +442,7 @@ def train(
         loggers["multi_action_orien_cos_sim"] = multi_action_orien_cos_sim_logger
 
     num_batches = len(dataloader)
+    sira_recompute_every = max(1, num_batches // 30)  # 30 recomputations per epoch
     tqdm_iter = tqdm.tqdm(
         dataloader,
         disable=not use_tqdm,
@@ -325,6 +450,26 @@ def train(
         desc=f"Training epoch {epoch}",
     )
     for i, data in enumerate(tqdm_iter):
+        # Per-step SIRA vector recomputation (30x per epoch)
+        # Also runs for baseline (sira_lambda=0) for monitoring cos_sim
+        if i > 0 and i % sira_recompute_every == 0:
+            print(f"\n=== {'SIRA' if sira_lambda > 0 else 'Monitor'}: Recomputing steering vectors at step {i} ===")
+            if sira_hook is not None:
+                sira_hook.remove()
+            new_vectors = recompute_sira_vectors(
+                model=model,
+                dataloader=dataloader,
+                transform=transform,
+                device=device,
+                n_samples=sira_n_samples,
+            )
+            model.train()
+            if sira_lambda > 0:
+                sira_vectors = new_vectors
+                sira_hook = SIRAHook()
+                target_model = model.module if hasattr(model, 'module') else model
+                sira_hook.install(target_model.decoder.sa_decoder.layers)
+
         (
             obs_image,
             goal_image,
@@ -341,7 +486,7 @@ def train(
         obs_image = torch.cat(obs_images, dim=1)
 
         viz_goal_image = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE)
-        
+
         goal_image = transform(goal_image).to(device)
         model_outputs = model(obs_image, goal_image)
 
@@ -404,6 +549,8 @@ def train(
     # Cleanup SIRA hook
     if sira_hook is not None:
         sira_hook.remove()
+
+    return sira_vectors
 
 
 def evaluate(

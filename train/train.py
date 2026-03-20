@@ -133,16 +133,18 @@ def main(config):
                         test_dataloaders[dataset_type] = dataset
 
     # combine all the datasets from different robots
-    train_dataset = ConcatDataset(train_dataset)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["batch_size"],
-        shuffle=True,
-        num_workers=config["num_workers"],
-        drop_last=False,
-        persistent_workers=True,
-    )
+    if train_dataset:
+        train_dataset = ConcatDataset(train_dataset)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config["batch_size"],
+            shuffle=True,
+            num_workers=config["num_workers"],
+            drop_last=False,
+            persistent_workers=True,
+        )
+    else:
+        train_loader = None
 
     if "eval_batch_size" not in config:
         config["eval_batch_size"] = config["batch_size"]
@@ -296,7 +298,7 @@ def main(config):
         load_project_folder = os.path.join("logs", config["load_run"])
         print("Loading model from ", load_project_folder)
         latest_path = os.path.join(load_project_folder, "latest.pth")
-        latest_checkpoint = torch.load(latest_path) #f"cuda:{}" if torch.cuda.is_available() else "cpu")
+        latest_checkpoint = torch.load(latest_path, weights_only=False)
         load_model(model, config["model_type"], latest_checkpoint)
         if "epoch" in latest_checkpoint:
             current_epoch = latest_checkpoint["epoch"] + 1
@@ -335,9 +337,8 @@ def main(config):
             eval_fraction=config["eval_fraction"],
             confidence_lambda=config.get("confidence_lambda", 0.0),
             sira_lambda=config.get("sira_lambda", 0.0),
-            sira_recompute_every=config.get("sira_recompute_every", 5),
+            sira_n_samples=config.get("sira_n_samples", 1000),
             sira_margin=config.get("sira_margin", 0.0),
-            sira_subset_frac=config.get("sira_subset_frac", 0.1),
         )
     else:
         train_eval_loop_nomad(
@@ -407,7 +408,7 @@ if __name__ == "__main__":
         wandb.init(
             project=config["project_name"],
             settings=wandb.Settings(start_method="fork"),
-            entity="gnmv2", # TODO: change this to your wandb entity
+            entity="b11901154-national-taiwan-university", # TODO: change this to your wandb entity
         )
         wandb.save(args.config, policy="now")  # save the config file
         wandb.run.name = config["run_name"]

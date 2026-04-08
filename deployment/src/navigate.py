@@ -4,8 +4,7 @@ import argparse
 import os
 import time
 from collections import deque
-from pathlib import Path
-from typing import Deque, List
+from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -17,7 +16,6 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32MultiArray
 import torch
 import yaml
-import time
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 from vint_train.training.train_utils import get_action
@@ -25,16 +23,13 @@ from vint_train.training.train_utils import get_action
 # UTILS
 from src.utils import msg_to_pil, to_numpy, transform_images, load_model
 
-# STEERING
-STEERING_VECTORS_DIR = f"{WORK_DIR}steering_vectors/"
-
 from src.topic_names import (IMAGE_TOPIC,
                         WAYPOINT_TOPIC,
-                        SAMPLED_ACTIONS_TOPIC,
-                        CLOSEST_NODE_TOPIC)
+                        SAMPLED_ACTIONS_TOPIC)
 
 # CONSTANTS
 WORK_DIR = "/workspace/src/visualnav-transformer/deployment/" # ALWAYS DEPLOY INSIDE DOCKER
+STEERING_VECTORS_DIR = f"{WORK_DIR}steering_vectors/"
 TOPOMAP_IMAGES_DIR = f"{WORK_DIR}topomaps/images"
 MODEL_WEIGHTS_PATH = f"{WORK_DIR}model_weights/"
 ROBOT_CONFIG_PATH =f"{WORK_DIR}config/robot.yaml"
